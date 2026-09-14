@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Word2Vec Forge — 词向量实验室</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#ffffff;--line:#e4e7ec;--ink:#1f2430;--muted:#6b7280;--accent:#2563eb;--accent2:#0ea5e9;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif;padding:18px}
+  h1{font-size:20px;margin-bottom:2px}
+  h2{font-size:14px;margin-bottom:8px;color:var(--muted);font-weight:600}
+  .sub{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  .wrap{display:grid;grid-template-columns:270px 1fr 300px;gap:14px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+  label{display:block;font-size:12px;color:var(--muted);margin:8px 0 2px}
+  input,select,button{font:inherit}
+  input,select{width:100%;border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:#fff;color:var(--ink)}
+  button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer;font-weight:600}
+  button.ghost{background:#eef2ff;color:var(--accent)}
+  .row{display:flex;gap:8px;margin-top:12px}
+  .row button{flex:1}
+  #status{font-size:12px;color:var(--muted);margin-top:10px;white-space:pre-wrap}
+  #proj{width:100%;display:block;background:#fbfcfe;border:1px solid var(--line);border-radius:8px}
+  #loss,#heat{width:100%;display:block;background:#fbfcfe;border:1px solid var(--line);border-radius:8px;margin-top:10px}
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11.5px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+  .big{font-size:26px;font-weight:700;color:var(--accent);margin:6px 0 2px}
+  ol{margin:8px 0 0 18px;font-size:13px}
+  ol li{padding:2px 0}
+  .sim{color:var(--muted);font-family:Consolas,monospace;font-size:12px}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:8px}
+  code{background:#f1f3f7;border-radius:4px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+<h1>Word2Vec Forge <span style="color:var(--muted);font-size:13px">· 词向量实验室</span></h1>
+<div class="sub">skip-gram + 负采样（SGNS），纯 JS 零依赖。合成语料内嵌「性别 / 身份 / 地理」结构 —— 训练后 <code>king − man + woman ≈ queen</code> 应当成立。</div>
+
+<div class="wrap">
+  <div class="card">
+    <h2>训练参数</h2>
+    <label>向量维度 dim</label><input id="dim" type="number" value="16" min="4" max="64">
+    <label>上下文窗口 window</label><input id="window" type="number" value="2" min="1" max="5">
+    <label>负样本数 neg</label><input id="neg" type="number" value="5" min="1" max="15">
+    <label>迭代轮数 epochs</label><input id="epochs" type="number" value="80" min="10" max="500">
+    <label>学习率 lr</label><input id="lr" type="number" value="0.05" step="0.01" min="0.001" max="1">
+    <label>随机种子 seed</label><input id="seed" type="number" value="42">
+    <div class="row"><button id="btnTrain">训练</button><button id="btnReset" class="ghost">恢复默认</button></div>
+    <div id="status">未训练</div>
+    <h2 style="margin-top:14px">Loss 曲线</h2>
+    <canvas id="loss" width="240" height="110"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>嵌入 2D 投影（PCA，主成分 <span id="varExpl">–</span>）</h2>
+    <canvas id="proj" width="620" height="430"></canvas>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>类比推理</h2>
+      <div style="display:grid;grid-template-columns:1fr;gap:6px">
+        <select id="ana1"></select>
+        <select id="ana2"></select>
+        <select id="ana3"></select>
+      </div>
+      <div class="big" id="anaOut">–</div>
+      <ol id="anaList"></ol>
+      <div class="hint">向量算术：<span id="anaExpr">king − man + woman = ?</span>，在全部词中找余弦最近（排除输入词）。</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>最近邻</h2>
+      <select id="nnWord"></select>
+      <ol id="nnList"></ol>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>相似度矩阵（余弦）</h2>
+      <canvas id="heat" width="272" height="272"></canvas>
+      <div class="hint">红 = 更相似，蓝 = 更不相似。按词表顺序排列。</div>
+    </div>
+  </div>
+</div>
+
+<script id="engine">
+(function(){
+"use strict";
+var W2V={};
+
+/* ---------- 随机数（可复现） ---------- */
+function mulberry32(a){
+  return function(){
+    a|=0;a=a+0x6D2B79F5|0;
+    var t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return ((t^t>>>14)>>>0)/4294967296;
+  };
+}
+W2V.mulberry32=mulberry32;
+
+function sigmoid(x){ if(x>35)return 1; if(x<-35)return 0; return 1/(1+Math.exp(-x)); }
+W2V.sigmoid=sigmoid;
+
+/* ---------- 合成语料：结构化特征 ---------- */
+/* 每个目标词由若干「特征」组成；特征对应专属上下文词。
+   king = (male, royal)，queen = (female, royal) ⇒ king−queen ≈ male−female */
+var FEATURE_CTX={
+  male:   ["he","him","his","brother"],
+  female: ["she","her","hers","sister"],
+  royal:  ["crown","throne","castle","palace"],
+  common: ["farm","shop","street","market"],
+  country:["europe","flag","nation","border"],
+  capital:["urban","skyline","mayor","metro"]
+};
+var TARGET_FEATURES={
+  king:["male","royal"],      queen:["female","royal"],
+  man:["male","common"],      woman:["female","common"],
+  france:["country","seine"], paris:["capital","seine"],
+  germany:["country","spree"],berlin:["capital","spree"],
+  italy:["country","tiber"],  rome:["capital","tiber"],
+  spain:["country","tagus"],  madrid:["capital","tagus"]
+};
+W2V.FEATURE_CTX=FEATURE_CTX;
+W2V.TARGET_FEATURES=TARGET_FEATURES;
+
+W2V.buildCorpus=function(rng,nSent){
+  var targets=Object.keys(TARGET_FEATURES),corpus=[];
+  for(var s=0;s<nSent;s++){
+    var t=targets[Math.floor(rng()*targets.length)];
+    var feats=TARGET_FEATURES[t],toks=[t];
+    for(var f=0;f<feats.length;f++){
+      var pool=FEATURE_CTX[feats[f]];
+      toks.push(pool?pool[Math.floor(rng()*pool.length)]:feats[f]);
+    }
+    for(var i=toks.length-1;i>0;i--){
+      var j=Math.floor(rng()*(i+1)),tmp=toks[i];toks[i]=toks[j];toks[j]=tmp;
+    }
+    corpus.push(toks);
+  }
+  return corpus;
+};
+W2V.buildCorpus.defaultVocab=function(){
+  var set={},keys=Object.keys(TARGET_FEATURES);
+  keys.forEach(function(k){set[k]=1;TARGET_FEATURES[k].forEach(function(f){
+    if(FEATURE_CTX[f])FEATURE_CTX[f].forEach(function(w){set[w]=1;});else set[f]=1;});});
+  return Object.keys(set);
+};
+
+/* ---------- 词表 ---------- */
+W2V.buildVocab=function(corpus,minCount){
+  minCount=minCount||1;
+  var counts={},order=[];
+  corpus.forEach(function(sent){sent.forEach(function(w){
+    if(!(w in counts)){counts[w]=0;order.push(w);}counts[w]++;});});
+  var word2id={},id2word=[],cnt=[];
+  order.forEach(function(w){if(counts[w]>=minCount){word2id[w]=id2word.length;id2word.push(w);cnt.push(counts[w]);}});
+  return {word2id:word2id,id2word:id2word,count:cnt,size:id2word.length};
+};
+
+/* ---------- 单对 (center, context, negatives) 的 loss 与解析梯度 ---------- */
+function sgnsPair(w,c,negs,W,C,D){
+  var gU=new Float64Array(D),gVpos=new Float64Array(D);
+  var gVneg=[];for(var k=0;k<negs.length;k++)gVneg.push(new Float64Array(D));
+  var loss=0,d,x,s,g;
+  x=0;for(d=0;d<D;d++)x+=W[w*D+d]*C[c*D+d];
+  s=sigmoid(x);loss+=-Math.log(s+1e-12);g=s-1;
+  for(d=0;d<D;d++){gU[d]+=g*C[c*D+d];gVpos[d]+=g*W[w*D+d];}
+  for(k=0;k<negs.length;k++){
+    var n=negs[k];x=0;for(d=0;d<D;d++)x+=W[w*D+d]*C[n*D+d];
+    s=sigmoid(x);loss+=-Math.log(1-s+1e-12);g=s;
+    for(d=0;d<D;d++){gU[d]+=g*C[n*D+d];gVneg[k][d]+=g*W[w*D+d];}
+  }
+  return {loss:loss,gU:gU,gVpos:gVpos,gVneg:gVneg};
+}
+W2V._sgnsPair=sgnsPair;
+
+/* ---------- 训练 ---------- */
+W2V.train=function(corpus,opts){
+  var o={dim:16,window:2,neg:5,epochs:80,lr:0.05,seed:42};
+  if(opts)for(var kk in opts)o[kk]=opts[kk];
+  var vocab=W2V.buildVocab(corpus);
+  if(vocab.size===0)return null;
+  var rng=mulberry32(o.seed);
+  var D=o.dim,N=vocab.size;
+  var W=new Float64Array(N*D),C=new Float64Array(N*D);
+  var i,d;
+  for(i=0;i<N*D;i++)W[i]=(rng()-0.5)/D;           /* 输入向量随机初始化，输出向量置零 */
+
+  var pow=new Float64Array(N),tot=0;               /* 负采样分布 unigram^0.75 */
+  for(i=0;i<N;i++){pow[i]=Math.pow(vocab.count[i],0.75);tot+=pow[i];}
+  for(i=0;i<N;i++)pow[i]/=tot;
+  function sampleNeg(){
+    var r=rng(),acc=0;
+    for(var k=0;k<N;k++){acc+=pow[k];if(r<=acc)return k;}
+    return N-1;
+  }
+
+  var sents=corpus.map(function(s){
+    return s.map(function(w){return vocab.word2id[w];}).filter(function(x){return x!==undefined;});
+  }).filter(function(s){return s.length>0;});
+  var order=sents.map(function(_,i2){return i2;});
+  var lossHist=[],pairCntTotal=0;
+
+  for(var ep=0;ep<o.epochs;ep++){
+    for(i=order.length-1;i>0;i--){
+      var j=Math.floor(rng()*(i+1)),t=order[i];order[i]=order[j];order[j]=t;
+    }
+    var curLr=Math.max(o.lr*(1-ep/o.epochs),1e-4);
+    var epLoss=0,pairCnt=0;
+    for(var oi=0;oi<order.length;oi++){
+      var sent=sents[order[oi]];
+      for(var p=0;p<sent.length;p++){
+        var w=sent[p];
+        for(var q=Math.max(0,p-o.window);q<=Math.min(sent.length-1,p+o.window);q++){
+          if(q===p)continue;
+          var c=sent[q],negs=[];
+          for(var k=0;k<o.neg;k++){
+            var n=sampleNeg(),tries=0;
+            while((n===w||n===c)&&tries<5){n=sampleNeg();tries++;}
+            negs.push(n);
+          }
+          var res=sgnsPair(w,c,negs,W,C,D);
+          epLoss+=res.loss;pairCnt++;pairCntTotal++;
+          for(d=0;d<D;d++)W[w*D+d]-=curLr*res.gU[d];
+          for(d=0;d<D;d++)C[c*D+d]-=curLr*res.gVpos[d];
+          for(k=0;k<negs.length;k++){var gv=res.gVneg[k];for(d=0;d<D;d++)C[negs[k]*D+d]-=curLr*gv[d];}
+        }
+      }
+    }
+    lossHist.push(pairCnt?epLoss/pairCnt:0);
+  }
+  return {W:W,C:C,vocab:vocab,opts:o,lossHist:lossHist,pairCnt:pairCntTotal};
+};
+
+/* ---------- 向量运算 ---------- */
+W2V.vec=function(model,word){
+  var id=model.vocab.word2id[word];
+  if(id===undefined)return null;
+  var D=model.opts.dim,v=new Array(D);
+  for(var d=0;d<D;d++)v[d]=model.W[id*D+d];
+  return v;
+};
+W2V.norm=function(v){var s=0;for(var i=0;i<v.length;i++)s+=v[i]*v[i];return Math.sqrt(s);};
+W2V.cos=function(a,b){
+  var s=0,na=0,nb=0;
+  for(var i=0;i<a.length;i++){s+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];}
+  if(na===0||nb===0)return 0;
+  return s/Math.sqrt(na*nb);
+};
+function unit(v){var n=W2V.norm(v)||1;return v.map(function(x){return x/n;});}
+
+W2V.nearest=function(model,word,k){
+  k=k||5;
+  var v=W2V.vec(model,word);if(!v)return [];
+  var out=[];
+  model.vocab.id2word.forEach(function(w2){
+    if(w2===word)return;
+    out.push({word:w2,sim:W2V.cos(v,W2V.vec(model,w2))});
+  });
+  out.sort(function(a,b){return b.sim-a.sim;});
+  return out.slice(0,k);
+};
+
+W2V.analogy=function(model,a,b,c,k){
+  k=k||5;
+  var va=W2V.vec(model,a),vb=W2V.vec(model,b),vc=W2V.vec(model,c);
+  if(!va||!vb||!vc)return null;
+  var t=unit(va),r=unit(vb),s=unit(vc);
+  var target=t.map(function(x,i){return x-r[i]+s[i];});
+  var out=[];
+  model.vocab.id2word.forEach(function(w2){
+    if(w2===a||w2===b||w2===c)return;
+    out.push({word:w2,sim:W2V.cos(target,W2V.vec(model,w2))});
+  });
+  out.sort(function(x,y){return y.sim-x.sim;});
+  return {answer:out[0]?out[0].word:null,top:out.slice(0,k)};
+};
+
+/* ---------- PCA 降到 2D（幂迭代 + 收缩） ---------- */
+W2V.pca2d=function(model,words){
+  var list=words||model.vocab.id2word;
+  var D=model.opts.dim,n=list.length;
+  var X=list.map(function(w){return W2V.vec(model,w);});
+  var mean=new Array(D).fill(0);
+  X.forEach(function(v){for(var d=0;d<D;d++)mean[d]+=v[d]/n;});
+  X=X.map(function(v){return v.map(function(x,d){return x-mean[d];});});
+  /* 协方差阵 */
+  var cov=[];for(var i=0;i<D;i++){cov.push(new Array(D).fill(0));}
+  X.forEach(function(v){
+    for(var a=0;a<D;a++)for(var b=0;b<D;b++)cov[a][b]+=v[a]*v[b]/n;
+  });
+  function powerIter(A){
+    var rng=mulberry32(7),v=[];
+    for(var d=0;d<D;d++)v[d]=rng()-0.5;
+    for(var it=0;it<500;it++){
+      var y=new Array(D).fill(0);
+      for(var a=0;a<D;a++)for(var b=0;b<D;b++)y[a]+=A[a][b]*v[b];
+      if(it>0&&orthoVec){ /* 去除 pc1 分量：第二次调用时 ortho 生效 */
+        var pr=0;for(var e=0;e<D;e++)pr+=y[e]*orthoVec[e];
+        y=y.map(function(x,i){return x-pr*orthoVec[i];});
+      }
+      var ny=W2V.norm(y);if(ny<1e-14)break;
+      v=y.map(function(x){return x/ny;});
+    }
+    var lambda=0;
+    for(var a2=0;a2<D;a2++)for(var b2=0;b2<D;b2++)lambda+=v[a2]*A[a2][b2]*v[b2];
+    return {v:v,lambda:lambda};
+  }
+  var orthoVec=null;
+  var pc1=powerIter(cov);
+  orthoVec=pc1.v;
+  var pc2=powerIter(cov);
+  var trace=0;for(var a4=0;a4<D;a4++)trace+=cov[a4][a4];
+  var points=list.map(function(w,i){
+    return {word:w,x:W2V.cos(X[i],pc1.v),y:W2V.cos(X[i],pc2.v)};
+  });
+  return {points:points,explained:trace>0?[pc1.lambda/trace,pc2.lambda/trace]:[0,0]};
+};
+
+/* ---------- 相似度矩阵 ---------- */
+W2V.similarityMatrix=function(model,words){
+  var list=words||model.vocab.id2word;
+  var vs=list.map(function(w){return W2V.vec(model,w);});
+  var m=list.map(function(_,i){
+    return list.map(function(_,j){return W2V.cos(vs[i],vs[j]);});
+  });
+  return {words:list,matrix:m};
+};
+
+/* ---------- 梯度检验（中心差分 vs 解析梯度） ---------- */
+W2V.gradCheck=function(seed,eps){
+  seed=seed||1;eps=eps||1e-6;
+  var D=3,N=6;
+  var rng=mulberry32(seed);
+  var W=new Float64Array(N*D),C=new Float64Array(N*D);
+  for(var i=0;i<N*D;i++){W[i]=rng()-0.5;C[i]=rng()-0.5;}
+  var w=1,c=3,negs=[0,2,5];
+  var an=sgnsPair(w,c,negs,W,C,D);
+  function lossOnly(){return sgnsPair(w,c,negs,W,C,D).loss;}
+  var maxRel=0;
+  function check(arr,idx){
+    var old=arr[idx];
+    arr[idx]=old+eps;var l1=lossOnly();
+    arr[idx]=old-eps;var l2=lossOnly();
+    arr[idx]=old;
+    var num=(l1-l2)/(2*eps);
+    var ana=an.gU[0]; /* 占位，真正比较在外层做 */
+    return num;
+  }
+  /* 对 W[w]、C[c]、C[neg] 的每个分量做中心差分 */
+  function compare(analytic,numerical){
+    var denom=Math.max(Math.abs(analytic),Math.abs(numerical),1e-8);
+    var rel=Math.abs(analytic-numerical)/denom;
+    if(rel>maxRel)maxRel=rel;
+  }
+  for(var d=0;d<D;d++){
+    var old;
+    old=W[w*D+d];W[w*D+d]=old+eps;var l1=lossOnly();W[w*D+d]=old-eps;var l2=lossOnly();W[w*D+d]=old;
+    compare(an.gU[d],(l1-l2)/(2*eps));
+    old=C[c*D+d];C[c*D+d]=old+eps;l1=lossOnly();C[c*D+d]=old-eps;l2=lossOnly();C[c*D+d]=old;
+    compare(an.gVpos[d],(l1-l2)/(2*eps));
+    for(var k=0;k<negs.length;k++){
+      var n=negs[k];
+      old=C[n*D+d];C[n*D+d]=old+eps;l1=lossOnly();C[n*D+d]=old-eps;l2=lossOnly();C[n*D+d]=old;
+      compare(an.gVneg[k][d],(l1-l2)/(2*eps));
+    }
+  }
+  return maxRel;
+};
+
+globalThis.W2V=W2V;
+})();
+</script>
+
+<script id="ui">
+(function(){
+if(typeof document==="undefined")return;
+
+var GROUP_COLORS=[
+  {names:["king","queen","man","woman"],label:"人物（royal/common × male/female）",c:"#b45309"},
+  {names:["france","germany","italy","spain"],label:"国家",c:"#2563eb"},
+  {names:["paris","berlin","rome","madrid"],label:"首都",c:"#0ea5e9"},
+  {names:["seine","spree","tiber","tagus"],label:"私有特征（河流）",c:"#7c3aed"},
+  {names:["he","him","his","brother","she","her","hers","sister"],label:"性别上下文词",c:"#059669"},
+  {names:["crown","throne","castle","palace","farm","shop","street","market"],label:"身份上下文词",c:"#d97706"},
+  {names:["europe","flag","nation","border","urban","skyline","mayor","metro"],label:"地理上下文词",c:"#64748b"}
+];
+function colorOf(word){
+  for(var i=0;i<GROUP_COLORS.length;i++)
+    if(GROUP_COLORS[i].names.indexOf(word)>=0)return GROUP_COLORS[i].c;
+  return "#9ca3af";
+}
+function $(id){return document.getElementById(id);}
+
+var model=null,corpus=null;
+
+function readOpts(){
+  return {
+    dim:Math.max(4,Math.min(64,parseInt($("dim").value,10)||16)),
+    window:Math.max(1,Math.min(5,parseInt($("window").value,10)||2)),
+    neg:Math.max(1,Math.min(15,parseInt($("neg").value,10)||5)),
+    epochs:Math.max(10,Math.min(500,parseInt($("epochs").value,10)||80)),
+    lr:Math.max(0.001,Math.min(1,parseFloat($("lr").value)||0.05)),
+    seed:parseInt($("seed").value,10)||42
+  };
+}
+
+function train(){
+  var o=readOpts();
+  $("status").textContent="训练中…";
+  var rng=W2V.mulberry32(o.seed);
+  corpus=W2V.buildCorpus(rng,400);
+  model=W2V.train(corpus,o);
+  drawAll();
+  var last=model.lossHist[model.lossHist.length-1];
+  $("status").textContent="就绪 · 词表 "+model.vocab.size+" 词 · 语料 "+corpus.length+
+    " 句 · "+o.epochs+" epoch · 最终 loss "+last.toFixed(4);
+  populateSelects();
+}
+
+function drawAll(){drawProj();drawLoss();drawHeat();updateAnalogy();updateNN();}
+
+/* ---------- 词表下拉 ---------- */
+function populateSelects(){
+  var words=model.vocab.id2word;
+  [["ana1","king"],["ana2","man"],["ana3","woman"],["nnWord","crown"]].forEach(function(cfg){
+    var sel=$(cfg[0]);
+    var html="";
+    words.forEach(function(w){
+      html+='<option value="'+w+'"'+(w===cfg[1]?" selected":"")+'>'+w+'</option>';
+    });
+    sel.innerHTML=html;
+  });
+  $("ana1").addEventListener("change",updateAnalogy);
+  $("ana2").addEventListener("change",updateAnalogy);
+  $("ana3").addEventListener("change",updateAnalogy);
+  $("nnWord").addEventListener("change",updateNN);
+  $("anaExpr").textContent=$("ana1").value+" − "+$("ana2").value+" + "+$("ana3").value+" = ?";
+}
+
+/* ---------- 投影散点 ---------- */
+function drawProj(){
+  var cv=$("proj"),ctx=cv.getContext("2d");
+  var Wd=cv.width,Ht=cv.height;
+  ctx.clearRect(0,0,Wd,Ht);
+  if(!model)return;
+  var pca=W2V.pca2d(model);
+  $("varExpl").textContent=(pca.explained[0]+pca.explained[1]).toFixed(1)+"%";
+  var xs=pca.points.map(function(p){return p.x;}),ys=pca.points.map(function(p){return p.y;});
+  var xmin=Math.min.apply(null,xs),xmax=Math.max.apply(null,xs);
+  var ymin=Math.min.apply(null,ys),ymax=Math.max.apply(null,ys);
+  var pad=44;
+  function px(x){return pad+(x-xmin)/(xmax-xmin||1)*(Wd-2*pad);}
+  function py(y){return Ht-pad-(y-ymin)/(ymax-ymin||1)*(Ht-2*pad);}
+  /* 网格 */
+  ctx.strokeStyle="#eef1f5";ctx.lineWidth=1;
+  for(var gx=0;gx<=4;gx++){ctx.beginPath();ctx.moveTo(pad+gx*(Wd-2*pad)/4,pad);ctx.lineTo(pad+gx*(Wd-2*pad)/4,Ht-pad);ctx.stroke();}
+  for(var gy=0;gy<=4;gy++){ctx.beginPath();ctx.moveTo(pad,pad+gy*(Ht-2*pad)/4);ctx.lineTo(Wd-pad,pad+gy*(Ht-2*pad)/4);ctx.stroke();}
+  pca.points.forEach(function(p){
+    var x=px(p.x),y=py(p.y);
+    ctx.beginPath();ctx.arc(x,y,4.5,0,Math.PI*2);
+    ctx.fillStyle=colorOf(p.word);ctx.fill();
+    ctx.fillStyle="#374151";ctx.font="11px Consolas,monospace";
+    ctx.fillText(p.word,x+7,y+4);
+  });
+  /* 图例 */
+  var lg=$("legend");lg.innerHTML="";
+  GROUP_COLORS.forEach(function(g){
+    var s=document.createElement("span");
+    s.innerHTML='<i style="background:'+g.c+'"></i>'+g.label;
+    lg.appendChild(s);
+  });
+}
+
+/* ---------- loss 曲线 ---------- */
+function drawLoss(){
+  var cv=$("loss"),ctx=cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(!model||!model.lossHist.length)return;
+  var h=model.lossHist,n=h.length;
+  var mn=Math.min.apply(null,h),mx=Math.max.apply(null,h);
+  ctx.strokeStyle="#2563eb";ctx.lineWidth=1.6;ctx.beginPath();
+  for(var i=0;i<n;i++){
+    var x=8+i/(n-1||1)*(cv.width-16);
+    var y=cv.height-10-(h[i]-mn)/(mx-mn||1)*(cv.height-20);
+    if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+  ctx.fillStyle="#6b7280";ctx.font="10px sans-serif";
+  ctx.fillText(mx.toFixed(3),6,12);ctx.fillText(mn.toFixed(3),6,cv.height-2);
+}
+
+/* ---------- 相似度热力图 ---------- */
+function drawHeat(){
+  var cv=$("heat"),ctx=cv.getContext("2d");
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(!model)return;
+  var sm=W2V.similarityMatrix(model);
+  var n=sm.words.length,cell=Math.floor(cv.width/n);
+  for(var i=0;i<n;i++)for(var j=0;j<n;j++){
+    var s=sm.matrix[i][j];
+    var r,g,b;
+    if(s>=0){r=Math.round(255);g=Math.round(255-200*s);b=Math.round(255-200*s);}
+    else{r=Math.round(255-200*(-s));g=Math.round(255);b=Math.round(255);}
+    ctx.fillStyle="rgb("+r+","+g+","+b+")";
+    ctx.fillRect(j*cell,i*cell,cell-0.5,cell-0.5);
+  }
+}
+
+/* ---------- 类比 ---------- */
+function updateAnalogy(){
+  if(!model)return;
+  var a=$("ana1").value,b=$("ana2").value,c=$("ana3").value;
+  $("anaExpr").textContent=a+" − "+b+" + "+c+" = ?";
+  var r=W2V.analogy(model,a,b,c,5);
+  if(!r){$("anaOut").textContent="–";$("anaList").innerHTML="";return;}
+  $("anaOut").textContent=r.answer||"?";
+  var html="";
+  r.top.forEach(function(it){html+='<li>'+it.word+' <span class="sim">'+it.sim.toFixed(4)+'</span></li>';});
+  $("anaList").innerHTML=html;
+}
+
+/* ---------- 最近邻 ---------- */
+function updateNN(){
+  if(!model)return;
+  var w=$("nnWord").value;
+  var nn=W2V.nearest(model,w,6);
+  var html="";
+  nn.forEach(function(it){html+='<li>'+it.word+' <span class="sim">'+it.sim.toFixed(4)+'</span></li>';});
+  $("nnList").innerHTML=html;
+}
+
+$("btnTrain").addEventListener("click",train);
+$("btnReset").addEventListener("click",function(){
+  $("dim").value=16;$("window").value=2;$("neg").value=5;
+  $("epochs").value=80;$("lr").value=0.05;$("seed").value=42;
+  train();
+});
+train();
+})();
+</script>
+</body>
+</html>
