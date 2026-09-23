@@ -1,5 +1,12 @@
 # Word2Vec Forge · 词向量实验室
 
+<p align="center">
+  <a href="https://github.com/CJX0712/word2vec-forge/actions/workflows/ci.yml"><img src="https://github.com/CJX0712/word2vec-forge/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/CJX0712/word2vec-forge/releases"><img src="https://img.shields.io/github/v/release/CJX0712/word2vec-forge?sort=semver" alt="release"></a>
+  <a href="https://github.com/CJX0712/word2vec-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CJX0712/word2vec-forge" alt="license"></a>
+  <img src="https://img.shields.io/badge/author-%E6%99%A8%E6%98%9F-1f6feb" alt="author">
+</p>
+
 单文件、零依赖、离线可跑的 word2vec（skip-gram + 负采样）交互实验室。
 用浏览器直接打开 `index.html` 即可，无需服务器、无需构建。
 
